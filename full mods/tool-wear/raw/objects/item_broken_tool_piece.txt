@@ -1,0 +1,41 @@
+item_broken_tool_piece
+
+[OBJECT:ITEM]
+
+For tool-wear. Size must go up from 1 to n
+
+[ITEM_TOOL:ITEM_TOOL_BROKEN_TOOL_PIECE_1]
+	[TOOL_WEAR_MOD_BROKEN_TOOL_PIECE]
+	[NAME:broken tool piece:broken tool pieces]
+	[ADJECTIVE:tiny]
+	[VALUE:1]
+	[MATERIAL_SIZE:1]
+	[SIZE:100]
+	[TILE:'|']
+
+[ITEM_TOOL:ITEM_TOOL_BROKEN_TOOL_PIECE_2]
+	[TOOL_WEAR_MOD_BROKEN_TOOL_PIECE]
+	[NAME:broken tool piece:broken tool pieces]
+	[ADJECTIVE:small]
+	[VALUE:2]
+	[MATERIAL_SIZE:2]
+	[SIZE:200]
+	[TILE:'|']
+
+[ITEM_TOOL:ITEM_TOOL_BROKEN_TOOL_PIECE_3]
+	[TOOL_WEAR_MOD_BROKEN_TOOL_PIECE]
+	[NAME:broken tool piece:broken tool pieces]
+	[ADJECTIVE:medium]
+	[VALUE:3]
+	[MATERIAL_SIZE:3]
+	[SIZE:300]
+	[TILE:'|']
+
+[ITEM_TOOL:ITEM_TOOL_BROKEN_TOOL_PIECE_4]
+	[TOOL_WEAR_MOD_BROKEN_TOOL_PIECE]
+	[NAME:broken tool piece:broken tool pieces]
+	[ADJECTIVE:large]
+	[VALUE:4]
+	[MATERIAL_SIZE:4]
+	[SIZE:400]
+	[TILE:'|']

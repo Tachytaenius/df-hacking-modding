@@ -1,0 +1,39 @@
+interaction_syndromes
+
+[OBJECT:INTERACTION]
+
+From 50. Script is hermit-syndromes
+
+Physical and mental attributes will rust as will skill, so the other syndromes are useful.
+Also the skin wrinkles anyway. This mod's approach to fixing that bug (present as of 50.14) is to calculate
+a value for how wrinkly the affected unit would be at their age and just move towards it every tick. Thus:
+Requires DFHack
+[INTERACTION:SYNDROME_WRAPPER_NO_AGING]
+	[I_EFFECT:ADD_SYNDROME]
+		[SYNDROME]
+			[SYN_NAME:no aging]
+			[CE_ADD_TAG:NO_AGING]
+
+Eliminates skill rust
+Requires DFHack
+[INTERACTION:SYNDROME_WRAPPER_NO_SKILL_RUST]
+	[I_EFFECT:ADD_SYNDROME]
+		[SYNDROME]
+			[SYN_NAME:no skill rust]
+			[CE_SPEED_CHANGE:SPEED_PERC:100:START:0] Dummy effect (100% speed) to prevent the game from removing the syndrome
+
+Ticks up mental attributes when below their (calculated) starting value
+Requires DFHack
+[INTERACTION:SYNDROME_WRAPPER_MENTAL_ATTRIBUTES_MINIMUM]
+	[I_EFFECT:ADD_SYNDROME]
+		[SYNDROME]
+			[SYN_NAME:mental attributes minimum]
+			[CE_SPEED_CHANGE:SPEED_PERC:100:START:0] Dummy effect
+
+Ticks up physcial attributes when below their (calculated) starting value
+Requires DFHack
+[INTERACTION:SYNDROME_WRAPPER_PHYSICAL_ATTRIBUTES_MINIMUM]
+	[I_EFFECT:ADD_SYNDROME]
+		[SYNDROME]
+			[SYN_NAME:physical attributes minimum]
+			[CE_SPEED_CHANGE:SPEED_PERC:100:START:0] Dummy effect
