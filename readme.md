@@ -11,4 +11,6 @@ Honestly this is just a temporary dump for some of my stuff so that it's public 
 
 Beware the TODOs! A large portion of this stuff is not finished.
 Feel very free to sift through it and decide what you want to use.
-I'm very happy to be asked about these files in the issues tab :)
+I'm very happy to be asked about these files in the issues tab, and I'm very happy to get this material usable for other people! :)
+
+Also, beware potential mistakes. Especially in the raws (it's very error-prone, especially if you are managing things across multiple versions of raws).

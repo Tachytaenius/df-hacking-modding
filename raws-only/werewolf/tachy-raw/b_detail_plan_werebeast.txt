@@ -1,4 +1,4 @@
-b_detail_plan_werewolf
+b_detail_plan_werebeast
 
 [OBJECT:BODY_DETAIL_PLAN]
 

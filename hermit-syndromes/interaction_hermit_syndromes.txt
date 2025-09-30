@@ -1,4 +1,4 @@
-interaction_syndromes
+interaction_hermit_syndromes
 
 [OBJECT:INTERACTION]
 
