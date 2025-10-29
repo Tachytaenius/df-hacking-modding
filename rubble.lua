@@ -13,7 +13,7 @@ disable rubble
 -- Encourages minecart use
 
 -- TODO: Fewer blocks per boulder
--- TODO: Test edge cases for item dropping
+-- TODO: Test edge cases for item dropping (stairs?)
 -- TODO: Drop extra boulder if digging channels or carving ramps-- if one should be dropped. Also, do we let gravity do its thing or move it down ourselves? Test what the game does.
 -- TODO: Specify that only layer materials are dropped, so no extra ore or gems are acquired
 
@@ -146,29 +146,6 @@ local function searchForBlockEvent(block, eventType, matType, matIndex, state, m
 	end
 end
 
-local function blockImpedesMotionAtTile(block, lx, ly)
-	-- local rubbleEvent = searchForBlockEvent(block, df.block_square_event_material_spatterst, 0, -1, df.matter_state.Solid, consts.temperatureNone, consts.temperatureNone)
-	-- if rubbleEvent and rubbleEvent.amount[lx][ly] > 0 then
-	-- 	return true
-	-- end
-
-	if not block.occupancy[lx][ly].item then
-		return false
-	end
-	for _, itemId in ipairs(block.items) do-- Does not contain hauled items
-		local item = df.item.find(itemId)
-		if item and item._type == df.item_boulderst then
-			local ix, iy, iz = dfhack.items.getPosition(item)
-			local ilx, ily = ix % 16, iy % 16
-			if ilx == lx and ily == ly then
-				return true
-			end
-		end
-	end
-
-	return false
-end
-
 local function addSpatter(matType, matIndex, state, amount, minTemp, maxTemp, x, y, z)
 	local block = dfhack.maps.getTileBlock(x, y, z)
 	if not block then
@@ -231,9 +208,29 @@ local function processCompletedMiningJob(job)
 	end
 end
 
+local function getBoulderCacheValue(boulderCache, x, y, z)
+	if not boulderCache[z] then
+		return nil
+	end
+	if not boulderCache[z][x] then
+		return nil
+	end
+	return boulderCache[z][x][y]
+end
+local function setBoulderCacheValue(boulderCache, x, y, z, value)
+	if not boulderCache[z] then
+		boulderCache[z] = {}
+	end
+	if not boulderCache[z][x] then
+		boulderCache[z][x] = {}
+	end
+	boulderCache[z][x][y] = value
+end
 -- TODO: Use proper timekeeping
 local function rubbleSlowdown()
-	local boulderCache = {}
+	local boulderCache = {} -- [z][x][y] internally, helper functions are x, y, z
+	local nextBlockItemIndexes = {}
+	-- local totalItemSearches = 0
 	for _, unit in ipairs(df.global.world.units.active) do
 		local x, y, z = dfhack.units.getPosition(unit)
 		if not (x and y and z) then
@@ -246,12 +243,36 @@ local function rubbleSlowdown()
 		end
 
 		local boulderPresent
-		if boulderCache[x] and boulderCache[x][y] ~= nil then
-			boulderPresent = boulderCache[x][y]
+		local cacheValue = getBoulderCacheValue(boulderCache, x, y, z)
+		if cacheValue ~= nil then
+			boulderPresent = cacheValue
 		else
-			boulderPresent = blockImpedesMotionAtTile(block, x % 16, y % 16)
-			boulderCache[x] = boulderCache[x] or {}
-			boulderCache[x][y] = boulderPresent
+			local lx, ly = x % 16, y % 16
+			if not block.occupancy[lx][ly].item then
+				-- setBoulderCacheValue(boulderCache, x, y, z, false)
+				boulderPresent = false
+			else
+				local itemIndex = nextBlockItemIndexes[block] or 0
+				while itemIndex < #block.items do
+					local itemId = block.items[itemIndex] -- Does not contain hauled items
+					itemIndex = itemIndex + 1
+					local item = df.item.find(itemId)
+					-- totalItemSearches = totalItemSearches + 1
+					if item and item._type == df.item_boulderst then
+						local ix, iy, iz = dfhack.items.getPosition(item)
+						setBoulderCacheValue(boulderCache, ix, iy, iz, true) -- If we find any boulders along the way to the stop position that aren't on the stop position, note their positions in the cache
+						if ix == x and iy == y and iz == z then
+							break
+						end
+					end
+				end
+				nextBlockItemIndexes[block] = itemIndex
+				boulderPresent = getBoulderCacheValue(boulderCache, x, y, z)
+				if boulderPresent == nil then
+					-- Save a false if we got a nil, as we're sure the nil means there is no boulder here
+					setBoulderCacheValue(boulderCache, x, y, z, false)
+				end
+			end
 		end
 
 		if boulderPresent then
