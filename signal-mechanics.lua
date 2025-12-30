@@ -1,21 +1,32 @@
 --@enable=true
+--@module=true
+
+-- signal-mechanics
+-- By Tachytaenius
+
+-- Requires the site-load-detector script to be enabled on world load before this one
+
+-- Place `enable signal-mechanics` in onLoad.init (not in onMapLoad.init) or otherwise ensure that it runs on world load.
+-- (Un)register callbacks by requiring with dfhack.reqscript and using unregisterCallback and registerNewCallback. Reregistering replaces.
+-- As a module, this script also provides the function sendSignal(building, state) which can be used to flip levers (and the things they are linked to), doors, and also trigger script-defined callbacks.
+
+-- TODO: Test site-load-detector integration extensively. Check all code tbh
+-- TODO: Check that buildings exist before doing things to them (cooling burn out, triggering, etc). Don't allow them triggering while deconstructing
+-- TODO: Proper args
 
 -- Only levers can be used as retransmitters/inverters, but pressure plates can still be used to trigger levers.
 -- Levers triggered by other triggers will flip on the same tick as their triggers do, but then trigger everything they are connected to on the next tick.
--- Make sure to have enable signal-mechanics on map load, otherwise some state changes may not be detected. Forcing the script's tick function to run multiple times in a single tick (enabling causes an extra run of that function due to how repeat-util works) won't have any effect, so saving and loading makes no difference to what pulls are detected.
+-- Make sure to have enable signal-mechanics on world load (rather than on map load), otherwise some state changes may not be detected. Forcing the script's tick function to run multiple times in a single tick (enabling causes an extra run of that function due to how repeat-util works) won't have any effect, so saving and loading makes no difference to what pulls are detected.
 -- If lever A pulls and goes left, and is connected to already-left-facing lever B, B will trigger other things as though it had gone from right to left, rather than do nothing because it was already set left.
 
 -- Notes:
 -- Trigger state 0 is represented as false, all other states are represented as true
--- Only fort mode is enabled
+-- Fortress mode and adventure mode are both enabled, site-load-detector will make sure no changed state is noticed by the script that might've been triggered years ago when reentering a site
 -- You can make an extremely fast clock by hooking up two levers to each other and setting one to invert signal. Certain triggerable buildings (ones that open and close) will quickly burn out if retriggered too often, because they can cause immense lag (or too much damage) if allowed to run at full speed. You can still trigger a burnt out building with a direct vanilla triggering.
 
--- TODO: Check that buildings exist before doing things to them (cooling burn out, triggering, etc). Don't allow them triggering while deconstructing
--- TODO: Proper args
-
 local persistTable = require("persist-table")
-local repeatUtil = require("repeat-util")
 local utils = require("utils")
+local siteLoadDetector = dfhack.reqscript("site-load-detector")
 
 local GLOBAL_KEY = "signal-mechanics"
 
@@ -68,27 +79,38 @@ function isEnabled()
 	return enabled
 end
 
-local function validGamestate()
-	-- Because we don't want wandering about in adventure mode to mess things up, we'll limit this to fort mode (for now?)
-	-- Engineering a system where building unloading, loading, destruction, and creation are all handled appropriately and persistently such that no building state changes are missed will be an interesting challenge
-	return dfhack.isMapLoaded() and df.global.gamemode == df.game_mode.DWARF
-	-- return dfhack.isMapLoaded()
-end
+registeredCallbacks = registeredCallbacks or {}
 
-local function printStatus()
-	print(("signal-mechanics is currently %s."):format(enabled and "enabled" or "disabled"))
-end
-
-local function disable()
-	if not enabled then
-		print("signal-mechanics already disabled")
-		return
+function unregisterCallback(name)
+	for i, callback in ipairs(registeredCallbacks) do
+		if callback.name == name then
+			table.remove(registeredCallbacks, i)
+			return true
+		end
 	end
-	targetBuildingRef = nil
-	enabled = false
-	repeatUtil.cancel(GLOBAL_KEY)
-	dfhack.onStateChange[GLOBAL_KEY] = nil
-	print("signal-mechanics disabled")
+	return false
+end
+
+function registerNewCallback(name, func)
+	unregisterCallback(name)
+	table.insert(registeredCallbacks, {
+		name = name,
+		func = func
+	})
+end
+
+local function triggerCallbacks(building, state)
+	for _, callback in ipairs(registeredCallbacks) do
+		local success, message = pcall(function() callback.func(building, state) end) -- Don't let one erroring function break the other registered functions from running
+		if not success then
+			dfhack.printerr("signal-mechanics: callback \"" .. callback.name .. "\" errored with:\n" .. message)
+		end
+	end
+end
+
+local function triggerLeverForNextTick(building, newState)
+	building.state = newState and 1 or 0
+	building.plate_info.flags[plateInfoFlagsUses.activatedByScript] = true -- Temporary
 end
 
 local function isLever(building)
@@ -128,12 +150,44 @@ local function triggerBuilding(building, sendState)
 				)
 				dfhack.maps.spawnFlow(position, df.flow_type.Smoke, -1, -1, burnoutSmokeAmount)
 			end
-			return -- Burnout, do not trigger
+			return -- Burnout, do not trigger (or activate callbacks)
 		end
 	end
 
 	-- setTriggerState does nothing for untriggerable buildings
+	triggerCallbacks(building, sendState)
 	building:setTriggerState(sendState and 0 or 1) -- Note that this is inverted compared to lever states
+end
+
+function sendSignal(building, state)
+	if isLever(building) then
+		triggerLeverForNextTick(building, state)
+	else
+		triggerBuilding(building, state)
+	end
+end
+
+local function validGamestate()
+	return dfhack.isWorldLoaded()
+end
+
+local function printStatus()
+	print(("signal-mechanics is currently %s."):format(enabled and "enabled" or "disabled"))
+end
+
+local function disable()
+	if not enabled then
+		print("signal-mechanics already disabled")
+		return
+	end
+	targetBuildingRef = nil
+	enabled = false
+	registeredCallbacks = {}
+	dfhack.onStateChange[GLOBAL_KEY] = nil
+	siteLoadDetector.onStateChangeAfterCallbacks[GLOBAL_KEY] = nil
+	siteLoadDetector.repeatTickAfterCallbacks[GLOBAL_KEY] = nil
+	siteLoadDetector.unregisterCallback(GLOBAL_KEY)
+	print("signal-mechanics disabled")
 end
 
 local function coolBurnoutBuildings()
@@ -144,6 +198,22 @@ local function coolBurnoutBuildings()
 			if currentBurnout ~= newBurnout then
 				setBuildingBurnout(building.flags, newBurnout)
 			end
+		end
+	end
+end
+
+local function resetRelevantBuildingData(building)
+	if building._type == df.building_trapst then
+		building.plate_info.flags[plateInfoFlagsUses.activatedByScript] = false
+		building.plate_info.flags[plateInfoFlagsUses.lastKnownState] = building.state ~= 0
+	end
+	setBuildingBurnout(building.flags, 0)
+end
+
+local function resetSiteBuildings(site)
+	for _, building in ipairs(df.global.world.buildings.all) do
+		if siteLoadDetector.isPosInSite(site, building.centerx, building.centery) then
+			resetRelevantBuildingData(building)
 		end
 	end
 end
@@ -178,11 +248,15 @@ local function tick()
 		-- Check for change in state
 		local flags = building.plate_info.flags
 		local currentState = building.state ~= 0
-		if flags[plateInfoFlagsUses.lastKnownState] ~= currentState then
+		if flags[plateInfoFlagsUses.lastKnownState] ~= currentState or flags[plateInfoFlagsUses.activatedByScript] then
 			-- State change detected!
-			local sendState = building.state ~= 0
+			local receivedState = building.state ~= 0
+			triggerCallbacks(building, receivedState)
+			local sendState
 			if flags[plateInfoFlagsUses.invertOutSignal] then
 				sendState = not sendState
+			else
+				sendState = receivedState
 			end
 			-- Set any triggers that this is linked to to the state of this trigger
 			-- If multiple triggers set a trigger on one frame, the state of the trigger with the highest building id (the one built last) will go through
@@ -193,9 +267,13 @@ local function tick()
 						local building2 = ref:getBuilding()
 						if building2 then
 							if isLever(building2) then
-								newTriggerStates[building2.id] = sendState
-							elseif activatedByScript then
-								triggerBuilding(building2, sendState)
+								newTriggerStates[building2.id] = sendState -- Callbacks will be triggered for this building next tick
+							else
+								if activatedByScript then
+									triggerBuilding(building2, sendState) -- And callbacks, if not burned out
+								else
+									triggerCallbacks(building2, sendState)
+								end
 							end
 						end
 						break -- No more iteration over item general refs, we found a building holder one. Go to the next linked mechanism
@@ -213,11 +291,11 @@ local function tick()
 		::continue::
 	end
 
-	-- Set last known state and set new state
+	-- Set new states (doing it within the above loop over watched buildings will cause issues with chains of levers all activating on one tick)
 	for _, building in ipairs(buildingsToWatch) do
-		if isLever(building) and newTriggerStates[building.id] ~= nil then
-			building.state = newTriggerStates[building.id] and 1 or 0
-			building.plate_info.flags[plateInfoFlagsUses.activatedByScript] = true -- Temporary
+		local newState = newTriggerStates[building.id]
+		if isLever(building) and newState ~= nil then
+			triggerLeverForNextTick(building, newState)
 		end
 	end
 
@@ -239,12 +317,30 @@ local function enable()
 		return
 	end
 	if enabled then
-		print("signal-mechanics already enabled, reenabling")
+		print("signal-mechanics already enabled, doing nothing")
+		return
 	end
-	repeatUtil.scheduleEvery(GLOBAL_KEY, 1, "ticks", tick)
+	siteLoadDetector.registerNewCallback(GLOBAL_KEY, resetSiteBuildings)
 	dfhack.onStateChange[GLOBAL_KEY] = function(stateChange)
+		if stateChange == SC_MAP_UNLOADED then
+			siteLoadDetector.repeatTickAfterCallbacks[GLOBAL_KEY] = nil
+		-- The following two lines must be guaranteed to run after site-load-detector triggers callbacks, so they are moved under site-load-detector's control
+		-- elseif stateChange == SC_MAP_LOADED then
+		-- 	siteLoadDetector.repeatTickAfterCallbacks[GLOBAL_KEY] = tick
+		end
+
 		if not validGamestate() then
 			disable()
+			return
+		end
+	end
+	if dfhack.isMapLoaded() then
+		print("signal-mechanics enabled while a map is loaded (as opposed to on world load, which is intended use)")
+		siteLoadDetector.repeatTickAfterCallbacks[GLOBAL_KEY] = tick
+	end
+	siteLoadDetector.onStateChangeAfterCallbacks[GLOBAL_KEY] = function(stateChange)
+		if stateChange == SC_MAP_LOADED then
+			siteLoadDetector.repeatTickAfterCallbacks[GLOBAL_KEY] = tick
 		end
 	end
 	enabled = true
@@ -267,6 +363,10 @@ local function trySetBuildingInverter(inversion)
 	local building = getBuildingForInversionSetGet() -- Errors if not successful
 	building.plate_info.flags[plateInfoFlagsUses.invertOutSignal] = inversion
 	print("Lever \"" .. utils.getBuildingName(building) .. "\" with id " .. building.id .. " set as a " .. (inversion and "signal inverter" or "signal retransmitter"))
+end
+
+if dfhack_flags.module then
+	return
 end
 
 local args = {...}
@@ -359,13 +459,15 @@ elseif args[1] ~= nil or not dfhack_flags.enable then
 	return
 end
 
-if dfhack_flags.enable_state then
-	if not validGamestate() then
-		qerror("Can't enable signal-mechanics without a map loaded")
+if dfhack_flags.enable then
+	if dfhack_flags.enable_state then
+		if not validGamestate() then
+			qerror("Can't enable signal-mechanics without a world loaded")
+		end
+		enable()
+	else
+		disable()
 	end
-	enable()
-else
-	disable()
 end
 
--- NOTE: In the wildly hypothetical scenario of a lever being created in the active state and then pulled to inacive all in one tick (like if another mod created an active lever and a unit about to finish pulling it at the same time) the pull will not be detected because the unused flag bit for lastKnownState will be false, which matches the inactive state. This is impossible in normal gameplay, and is left as a curiousity, rather than a warning for the airtightness of the mod. It could be fixed, perhaps, with eventful's onJobCompleted, depending on when that runs.
+-- NOTE: In the wildly hypothetical scenario of a lever being created in the active state and then pulled to inacive all in one tick (like if another mod created an active lever and a unit about to finish pulling it at the same time) the pull will not be detected because the unused flag bit for lastKnownState will be false, which matches the inactive state. This is impossible in normal gameplay, and is left as a curiosity, rather than a warning for the airtightness of the mod. It could be fixed, perhaps, with eventful's onJobCompleted, depending on when that runs.
