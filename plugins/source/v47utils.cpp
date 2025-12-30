@@ -177,6 +177,8 @@ static command_result do_remove_job_command(color_ostream &out, vector<string> &
 	// TODO: Actual argument parameter checking etc so's not to crash
 	int32_t jobId = std::stoi(parameters[1]);
 
+	CoreSuspender suspend;
+
 	using df::global::world;
 	df::job_list_link *link = world->jobs.list.next;
 	for (; link; link = link->next) {
