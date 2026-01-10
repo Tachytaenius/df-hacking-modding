@@ -1,0 +1,1 @@
+[TOOL:ITEM_TOOL_UR_BOARD] (Don't add the Ur reactions to any entities)

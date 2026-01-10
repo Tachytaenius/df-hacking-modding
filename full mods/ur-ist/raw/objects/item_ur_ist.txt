@@ -1,0 +1,13 @@
+item_ur-ist
+
+[OBJECT:ITEM]
+
+[ITEM_TOOL:ITEM_TOOL_UR_BOARD]
+	[NAME:Ur board:Ur boards]
+	[VALUE:20]
+	[HARD_MAT]
+	[TILE:'#']
+	[SIZE:100]
+	[MATERIAL_SIZE:1]
+	[INVERTED_TILE]
+	[UR_MOD_CAN_PLAY_UR:standard]
