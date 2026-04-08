@@ -9,7 +9,7 @@ local repeatUtil = require("repeat-util")
 local utils = require("utils")
 local customRawTokens = require("custom-raw-tokens")
 local eventful = require("plugins.eventful")
-local persistTable = require("persist-table")
+local persistTable = require("persist-table") -- TODO: Fix persist-table not loading stuff properly when loading from a Lua file in init.d but working if loading from onMapLoad.init (which is not ideal, we want it to be fully self-contained in the raws per-world)
 
 local consts = {
 	-- These also depend on job type
@@ -1121,6 +1121,11 @@ if args.getDesiredBoardCount or args.setDesiredBoardCount then
 	elseif args.setDesiredBoardCount then
 		setDesiredBoardCount(location, args.setDesiredBoardCount)
 	end
+end
+
+if args.getBoardsInLocation then
+	local location = getSelectedLocation()
+	print(getBoardsInLocation(location))
 end
 
 if args.stopManaging then
