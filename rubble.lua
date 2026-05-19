@@ -8,14 +8,17 @@ Usage
 
 enable rubble
 disable rubble
+rubble plugin-yes
+rubble plugin-no
 ]]
 
--- Encourages minecart use
+-- Run `rubble plugin-yes` if the plugin (called rubblecompute) is installed. This is faster.
 
 -- TODO: Fewer blocks per boulder
+-- TODO: Only ever one layer stone boulder per tile mined
+-- TODO: Make configurable
 -- TODO: Test edge cases for item dropping (stairs?)
 -- TODO: Drop extra boulder if digging channels or carving ramps-- if one should be dropped. Also, do we let gravity do its thing or move it down ourselves? Test what the game does.
--- TODO: Specify that only layer materials are dropped, so no extra ore or gems are acquired
 
 local eventful = require("plugins.eventful")
 local repeatUtil = require("repeat-util")
@@ -25,8 +28,10 @@ local consts = {
 	scriptKey = "rubble",
 
 	repeatInterval = 6,
-	actionTimerAdd = 5, -- If this is greater than or equal to repeatInterval then units won't move
+	actionTimerMultiply = 2.5,
 	dropSoilItems = true,
+
+	handledMoveActionFlagKey = 31, -- Applies to more action types than just Move, but the memory location of Move's flags is altered for all of them
 
 	temperatureNone = 60001 -- Game's own value
 }
@@ -228,6 +233,11 @@ local function setBoulderCacheValue(boulderCache, x, y, z, value)
 end
 -- TODO: Use proper timekeeping
 local function rubbleSlowdown()
+	if usePlugin then
+		dfhack.run_command("rubblecompute slowdown " .. consts.actionTimerMultiply)
+		return
+	end
+
 	local boulderCache = {} -- [z][x][y] internally, helper functions are x, y, z
 	local nextBlockItemIndexes = {}
 	-- local totalItemSearches = 0
@@ -276,8 +286,43 @@ local function rubbleSlowdown()
 		end
 
 		if boulderPresent then
-			-- TODO: Don't let talking be slowed down by sitting on a boulder lol
-			dfhack.units.subtractGroupActionTimers(unit, -consts.actionTimerAdd, df.unit_action_type_group.All)
+			local multiplier = consts.actionTimerMultiply -- Doesn't have to be an integer. Should be more than 1.
+
+			-- Notably, combat is not slowed down
+			-- Affected action types: Move, and Job (but not Job2 (which is later renamed to JobRecover))
+			-- Move is handled specially, since it has a useful timer_init variable
+			-- All action types are converted to move to access the memory region of the flag bits (which should be unused in the other types)
+			for _, action in ipairs(unit.actions) do
+				local actionTypeName = df.unit_action_type[action.type]
+				if actionTypeName == "Move" then
+					-- TODO: Skip if flying
+					if not action.data.move.flags[consts.handledMoveActionFlagKey] then
+						local data = action.data.move
+						data.flags[consts.handledMoveActionFlagKey] = true
+
+						local timeUsed = data.timer_init - data.timer -- Only Move gives this information, making it more exact
+						local newTimerInit = math.max(1, math.floor(data.timer_init * multiplier))
+						local newTimer = math.max(1, newTimerInit - timeUsed)
+						data.timer_init = newTimerInit
+						data.timer = newTimer
+					end
+				elseif
+					actionTypeName == "Job"
+					-- And anything else
+				then
+					action.type = df.unit_action_type.Move
+					if not action.data.move.flags[consts.handledMoveActionFlagKey] then
+						action.data.move.flags[consts.handledMoveActionFlagKey] = true
+						action.type = df.unit_action_type[actionTypeName] -- Revert
+						local tag = df.unit_action_type.attrs[actionTypeName].tag
+						local data = action.data[tag]
+
+						data.timer = math.max(1, math.floor(data.timer * multiplier))
+					else
+						action.type = df.unit_action_type[actionTypeName] -- Revert
+					end
+				end
+			end
 		end
 
 	    ::continue::
@@ -334,12 +379,19 @@ function disable()
 	print("rubble disabled")
 end
 
+local args = {...}
 if dfhack_flags.enable then
 	if dfhack_flags.enable_state then
 		enable()
 	else
 		disable()
 	end
+elseif args[1] == "plugin-yes" then
+	usePlugin = true
+	print("rubblecompute plugin will be run if present (error if not)")
+elseif args[1] == "plugin-no" then
+	usePlugin = false
+	print("rubblecompute plugin won't be run; rubble will run in Lua only")
 else
 	print(usage)
 end
