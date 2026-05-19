@@ -75,7 +75,7 @@ local function popControl(forceEnterSettings)
                 while not tonumber(visitorCapInput) or visitorCapInput == "" do
                     _, visitorCapInput = script.showInputPrompt("Visitors", "Vistitor cap? Settings visitor cap " .. originalVisitorCap .. "\n(assuming wasn't changed before first call of this script)")
                 end
-                siteInfo.visitorCap = tostring(tonumber(visitorCap) or originalVisitorCap)
+                siteInfo.visitorCap = tostring(tonumber(visitorCapInput) or originalVisitorCap)
             end
         end
         -- use settings
