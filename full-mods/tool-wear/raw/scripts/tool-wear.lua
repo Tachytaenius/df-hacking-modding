@@ -21,12 +21,12 @@ local consts = {
 }
 
 local defaultConfig = {
-	overallDurabilityMultiplier = 3000,
+	overallDurabilityMultiplier = 12000,
 	qualityMulPower = 1.8,
 	qualityMulLow = 0.4, -- Lower bound, within (0, 1]
 	strengthConst = 500000, -- This number, instead of being used in the calculations implied above, is used in one that gives diminishing returns for material shear fracture.
 
-	jobWearMultipliers = {
+	jobWearMultipliers = { -- All of these expect a weapon with the MINING melee skill except for FellTree (which expects AXE)
 		Dig = 4,
 		CarveUpwardStaircase = 3,
 		CarveDownwardStaircase = 2, -- TODO: This sometimes removes more stone than Dig, sometimes less. Reconsider this system?
@@ -162,6 +162,13 @@ local function handleWear(worker, item, jobWearFactor)
 	end
 end
 
+local function getWeaponSkill(item)
+	if item._type ~= df.item_weaponst then
+		return nil
+	end
+	return item.subtype.skill_melee
+end
+
 local function onJobCompleted(job)
 	local jobTypeString = df.job_type[job.job_type]
 	local jobWearFactor = config.jobWearMultipliers[jobTypeString]
@@ -169,15 +176,20 @@ local function onJobCompleted(job)
 		return
 	end
 
+	local requiredSkill = df.job_skill[jobTypeString == "FellTree" and "AXE" or "MINING"]
+
 	local worker = dfhack.job.getWorker(job)
 	local bodyPart = worker.body.weapon_bp
 	for _, equip in ipairs(worker.inventory) do
 		if equip.body_part_id == bodyPart and equip.mode == 1 then -- mode 1 is weapon
 			local item = equip.item
-			if not item.flags.artifact then
+			if
+				getWeaponSkill(item) == requiredSkill and
+				not item.flags.artifact
+			then
 				handleWear(worker, item, jobWearFactor)
+				break
 			end
-			return
 		end
 	end
 end
