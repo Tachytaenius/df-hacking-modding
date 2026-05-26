@@ -11,6 +11,8 @@ local customRawTokens = require("custom-raw-tokens")
 local eventful = require("plugins.eventful")
 local persistTable = require("persist-table") -- TODO: Fix persist-table not loading stuff properly when loading from a Lua file in init.d but working if loading from onMapLoad.init (which is not ideal, we want it to be fully self-contained in the raws per-world)
 
+-- TODO: Remove "satisfied after putting item on display" when putting boards back, and also ensure that they are being put back by the players?
+
 local consts = {
 	-- These also depend on job type
 	isPlayUrJobFlagKey = 31,

@@ -1,4 +1,4 @@
-reaction_ur-ist
+reaction_ur_ist
 
 [OBJECT:REACTION]
 
