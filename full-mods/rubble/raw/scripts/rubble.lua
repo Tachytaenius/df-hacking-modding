@@ -1,7 +1,5 @@
 --@ enable = true
 
--- TODO: Convert to an installable mod like tool-wear or tachy-guns
-
 local usage = [[
 Usage
 -----
