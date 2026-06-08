@@ -4,6 +4,7 @@
 -- For DF version 0.47.05
 
 -- Requires my put-item script
+-- Requires my v47utils plugin for safe job cancellation
 
 local repeatUtil = require("repeat-util")
 local utils = require("utils")
@@ -11,21 +12,20 @@ local customRawTokens = require("custom-raw-tokens")
 local eventful = require("plugins.eventful")
 local persistTable = require("persist-table") -- TODO: Fix persist-table not loading stuff properly when loading from a Lua file in init.d but working if loading from onMapLoad.init (which is not ideal, we want it to be fully self-contained in the raws per-world)
 
--- TODO: Remove "satisfied after putting item on display" when putting boards back, and also ensure that they are being put back by the players?
-
 local consts = {
 	-- These also depend on job type
 	isPlayUrJobFlagKey = 31,
 	isLocationStorageJobFlagKey = 30,
 	isWaitForUrGameJobFlagKey = 30,
+	isRunningPlayJobFlagKey = 29,
 
 	-- For when we can't let the job finish just yet
 	waitJobCompletionTimerSet = 15,
-	playJobCompletionTimerSet = 3,
+	playJobCompletionTimerSet = 50, -- TODO: Does a custom reaction with no skill (like the ones used in this mod) have any way to make this timer move faster? Ideally not.
 
 	scriptKey = "ur-ist",
 
-	-- TODO
+	-- TODO(?)
 	-- requiredDice = {
 	-- 	standard = {
 	-- 		tetrahedral = 4
@@ -79,7 +79,8 @@ local function removeJobThought(job) -- For onJobCompleted
 	for i, emotion in ipairs(soul.personality.emotions) do
 		if
 			emotion.year == df.global.cur_year and emotion.year_tick == df.global.cur_year_tick and
-			emotion.thought == df.unit_thought_type.SatisfiedAtWork
+			emotion.thought == df.unit_thought_type.SatisfiedAtWork and
+			emotion.subthought == job.job_type
 		then
 			soul.personality.emotions:erase(i)
 			return
@@ -171,8 +172,34 @@ local function removeJobPostings(job, removeAll)
 	job.posting_index = -1
 	return removed
 end
+local function isUnitInSquadOrder(unit)
+	-- Part of a squad?
+	local squad = df.squad.find(unit.military.squad_id)
+	if not squad then
+		return false
+	end
+	-- Any all-squad orders?
+	if #squad.orders > 0 then
+		return true
+	end
+	-- Any position-specific orders?
+	local positionIndex = unit.military.squad_position
+	if #squad.positions <= positionIndex then
+		-- ???
+		return false
+	end
+	local position = squad.positions[positionIndex]
+	if #position.orders > 0 then
+		return true
+	end
+	-- No orders found
+	return false
+end
 local function canBeAddedToJob(unit)
 	if unit.job.current_job then
+		return false
+	end
+	if isUnitInSquadOrder(unit) then
 		return false
 	end
 	return true
@@ -218,6 +245,11 @@ local function isPlayJob(job)
 	return job.job_type == df.job_type.CustomReaction and job.flags[consts.isPlayUrJobFlagKey]
 end
 
+local function isPlayJobRunning(job)
+	assert(isPlayJob(job), "Can't check if a job which isn't an Ur play job is a running Ur play job")
+	return job.flags[consts.isRunningPlayJobFlagKey]
+end
+
 local function getUrJobBoardId(job)
 	for _, ref in ipairs(job.general_refs) do
 		if ref._type == df.general_ref_item then
@@ -246,6 +278,22 @@ local function getUrJobUnits(job)
 	return a, b, getter
 end
 
+local function getUrJobBuildings(job)
+	local aChair, bChair, playTable
+	for _, ref in ipairs(job.general_refs) do
+		if ref._type == df.general_ref_building then
+			local building = ref:getBuilding()
+			if not aChair then
+				aChair = building
+			elseif not bChair then
+				bChair = building
+			elseif not playTable then
+				playTable = building
+			end
+		end
+	end
+	return aChair, bChair, playTable
+end
 local function getUrJobSourceLocation(job)
 	for _, ref in ipairs(job.general_refs) do
 		if ref._type == df.general_ref_abstract_buildingst then
@@ -300,7 +348,6 @@ local function getJobBuildingPosition(job)
 	if building then
 		return building.centerx, building.centery, building.z
 	end
-
 end
 
 local function canAddImminentJobAction(unit)
@@ -359,6 +406,16 @@ local function addImminentJobAction(unit)
 	end
 end
 
+local function makeZoomAnnouncement(text, colour, bright, announcementType, zoomType, x, y, z)
+	local announcements = df.global.world.status.announcements
+	local prevLength = #announcements
+	dfhack.gui.showZoomAnnouncement(announcementType, xyz2pos(x, y, z), text, colour, bright)
+	for i = prevLength, #announcements - 1 do -- Get continuations
+		local announcement = announcements[i]
+		announcement.zoom_type = zoomType
+	end
+end
+
 local function getUnitGameBotIntelligence(unit)
 	local analyticalAbility = dfhack.units.getMentalAttrValue(unit, df.mental_attribute_type.ANALYTICAL_ABILITY)
 	return math.min(1, analyticalAbility / 4000)
@@ -390,7 +447,7 @@ local function playGame(playJob, unitA, unitB, jobsToCancel)
 	local winnerString = winnerName and dfhack.TranslateName(winnerName) or "An unknown creature"
 	local loserString = loserName and dfhack.TranslateName(loserName) or "an unknown creature"
 	local announcement = winnerString .. " has won a game of Ur against " .. loserString .. "."
-	dfhack.gui.showAnnouncement(announcement, 2, true) -- TODO: Zoom
+	makeZoomAnnouncement(announcement, 2, true, -1, df.report_zoom_type.Unit, dfhack.units.getPosition(winner))
 
 	-- Add thoughts
 	dfhack.run_script("add-thought", "--unit", winner.id, "--emotion", df.emotion_type.ENJOYMENT, "--strength", 1, "--thought", df.unit_thought_type.PlayToy, "--subthought", "\\-1") -- -1 is interpreted as an argument, but \-1 means "no particular toy type"
@@ -428,7 +485,11 @@ end
 
 local function findItems(location, itemCheck, numRequired, walkablePosition, availabilityCheck)
 	local foundItems = {}
-	for _, buildingId in ipairs(location.contents.building_ids) do
+	local contents = location:getContents()
+	if not contents then
+		return foundItems
+	end
+	for _, buildingId in ipairs(contents.building_ids) do
 		local building = df.building.find(buildingId)
 		if not building then
 			goto continue
@@ -454,9 +515,6 @@ local function findItems(location, itemCheck, numRequired, walkablePosition, ava
 				end
 				if itemCheck(item) then
 					foundItems[#foundItems+1] = item
-					if numRequired and #foundItems >= numRequired then
-						return foundItems
-					end
 				end
 			    ::continue::
 			end
@@ -464,11 +522,23 @@ local function findItems(location, itemCheck, numRequired, walkablePosition, ava
 		end
 		::continue::
 	end
+	if numRequired then
+		foundItems = shuffle(foundItems)
+		for i = numRequired + 1, #foundItems do
+			foundItems[i] = nil
+		end
+	end
 	return foundItems
 end
 
 local function findSingleItem(location, itemCheck, walkablePosition, availabilityCheck)
-	return findItems(location, itemCheck, 1, walkablePosition, availabilityCheck)[1]
+	local items = findItems(location, itemCheck, 1, walkablePosition, availabilityCheck)
+	if #items == 0 then
+		return nil
+	end
+	-- local index = rng:random(#items) + 1
+	local index = 1 -- If given numRequired then findItems looks through all possibilities, shuffles, and returns a table with only the first <numRequired> items. So in this function items is either an empty table or a table containing one random relevant item
+	return items[index]
 end
 
 local function setUpGame(event, unitA, unitB, getterUnit)
@@ -515,7 +585,11 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 
 	local tables = {}
 	local chairMap = {}
-	for _, buildingId in ipairs(location.contents.building_ids) do
+	local contents = location:getContents()
+	if not contents then
+		return
+	end
+	for _, buildingId in ipairs(contents.building_ids) do
 		local building = df.building.find(buildingId)
 		if not building then
 			goto continue
@@ -581,10 +655,10 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 
 	-- TODO: Set furniture users?
 
-	local waitBuildings = {}
-	for _, unit in ipairs(waitUnits) do
-		waitBuildings[unit.id] = unit == unitA and tableSet.chairA or tableSet.chairB
-	end
+	local waitBuildings = {
+		[unitA.id] = tableSet.chairA,
+		[unitB.id] = tableSet.chairB
+	}
 
 	local getJob = dfhack.run_script("put-item", "-itemId", board.id, "-buildingId", table.id, "-forceEventManagerFix") -- forceEventManagerFix ensures that onJobCompleted will activate for the job
 	addJobWorker(getJob, getterUnit)
@@ -596,6 +670,7 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 		-- local preserverReagent = gatherReaction.reagents[0]
 
 		-- Setting path is required to avoid picking up extra items!
+		-- Which also probably means that wiping a unit's path can cause side effects, then?
 		getterUnit.path.goal = df.unit_path_goal.GrabJobResources
 		getterUnit.path.dest.x, getterUnit.path.dest.y, getterUnit.path.dest.z =
 			dfhack.items.getPosition(board)
@@ -616,6 +691,11 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 	getJob.general_refs:insert("#", {new = df.general_ref_unit, unit_id = unitB.id})
 	getJob.general_refs:insert("#", {new = df.general_ref_unit, unit_id = getterUnit.id})
 	getJob.general_refs:insert("#", {new = df.general_ref_item, item_id = board.id})
+	getJob.general_refs:insert("#", {new = df.general_ref_building, building_id = waitBuildings[unitA.id].id})
+	getJob.general_refs:insert("#", {new = df.general_ref_building, building_id = waitBuildings[unitB.id].id})
+	getJob.general_refs:insert("#", {new = df.general_ref_building, building_id = table.id})
+	-- Ensure it has the correct completion timer (which remains suspended while the items are being placed etc)
+	getJob.completion_timer = consts.playJobCompletionTimerSet
 
 	for _, unit in ipairs(waitUnits) do
 		local waitBuilding = waitBuildings[unit.id]
@@ -635,7 +715,7 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 end
 
 local function canUnitPlay(unit)
-	-- TODO: Not stressed, not hungry, not on a squad order, etc
+	-- TODO: Not stressed, not hungry, etc
 	if not dfhack.units.isCitizen(unit) then
 		return false
 	end
@@ -643,6 +723,9 @@ local function canUnitPlay(unit)
 		return false
 	end
 	if unit.job.current_job then
+		return false
+	end
+	if isUnitInSquadOrder(unit) then
 		return false
 	end
 	return true
@@ -793,7 +876,11 @@ end
 
 local function getLocationBoxBuildings(location)
 	local boxBuildings = {}
-	for _, buildingId in ipairs(location.contents.building_ids) do
+	local contents = location:getContents()
+	if not contents then
+		return boxBuildings
+	end
+	for _, buildingId in ipairs(contents.building_ids) do
 		local building = df.building.find(buildingId)
 		if not building then -- Main building won't be a box, since you can't make a tavern from a box (TODO: what if I do, though.)
 			goto continue
@@ -820,7 +907,7 @@ local function tryPlaceBoardInLocationBox(item, location, boxBuildings, forceUni
 			-- TODO: Custom reaction instead of put item on display for moving items around? Will it work? Don't forget to remove job thought.
 
 			-- Synthesise a job to claim it (not a job marked with the unused flag used to start an actual game)
-			local job = dfhack.run_script("put-item", "-itemId", item.id, "-buildingId", box.id) -- in_building will be true when it is placed
+			local job = dfhack.run_script("put-item", "-itemId", item.id, "-buildingId", box.id, "-forceEventManagerFix") -- in_building will be true when it is placed
 			job.flags[consts.isLocationStorageJobFlagKey] = true
 			job.general_refs:insert("#", {new = df.general_ref_abstract_buildingst, site_id = df.global.ui.site_id, building_id = location.id})
 			if forceUnit then
@@ -926,13 +1013,13 @@ end
 local function maintainJobs()
 	local playJobs = {}
 	local waitJobsInWorld = {} -- Not per play job
-	local acceptableWaitJobIds = {}
 
 	local cancelledWaitJobIds = {}
-	local function safelyCancelWaitJob(job)
+	local waitJobsToCancel = {}
+	local function markWaitJobCancel(job)
 		if not cancelledWaitJobIds[job.id] then
 			assert(isWaitJob(job), "Attemped to cancel a non-wait job as a wait job")
-			cancelJob(job)
+			waitJobsToCancel[#waitJobsToCancel+1] = job
 			cancelledWaitJobIds[job.id] = true
 		end
 	end
@@ -957,31 +1044,42 @@ local function maintainJobs()
 	for _, playJob in ipairs(playJobs) do
 		-- TODO: Cancel Ur jobs ifever any item hacked into its memory (or the location hacked into its memory (or the building!)) becomes in any way invalid
 
-		-- TODO: Upon an Ur job being cancelled, ensure the items are placed back in the location or were left on a table in in_building mode ()
+		-- TODO: Upon an Ur job being cancelled (at least anywhere in this mod's code), ensure the items are placed back in the location or were left on a table in in_building mode
 
-		local a, b, getter = getUrJobUnits(playJob)
-		local waitUnits = {}
-		if a ~= getter then
-			waitUnits[#waitUnits+1] = a
-		end
-		if b ~= getter then
-			waitUnits[#waitUnits+1] = b
-		end
-		local waitJobsThisPlayJob = {}
-
-		-- Check that the job is still running OK
 		local errored = false
+
+		local playJobWorker = dfhack.job.getWorker(playJob)
+		-- Check that the job is still running OK
 		if
-			not dfhack.job.getWorker(playJob) or
+			not playJobWorker or
 			playJob.flags.suspend or
 			playJob.flags.item_lost
 		then
 			errored = true
 		end
 
+		local a, b, getter = getUrJobUnits(playJob)
+		local waitUnits = {}
+		if a ~= playJobWorker then
+			waitUnits[#waitUnits+1] = a
+		end
+		if b ~= playJobWorker then
+			waitUnits[#waitUnits+1] = b
+		end
+		local waitJobsThisPlayJob = {}
+		local waitJobsByUnit = {}
+
+		-- Board and furniture present and OK?
+		local aChair, bChair, table = getUrJobBuildings(playJob)
+		local boardId = getUrJobBoardId(playJob)
+		local board = boardId and df.item.find(boardId)
+		if not (aChair and bChair and table and board) then
+			errored = true
+		end
+
 		-- Check that wait units are in their correct jobs
 		for _, waitUnit in ipairs(waitUnits) do
-			-- We don't break this loop upon encountering an error because we also want to gather up all wait jobs we have access to to cancel them all (TODO: Should we even do that?)
+			-- We don't break this loop upon encountering an error because we also want to gather up all wait jobs we have access to to cancel them all
 			local job = waitUnit.job.current_job
 			if not job then
 				errored = true
@@ -991,21 +1089,19 @@ local function maintainJobs()
 				errored = true
 				goto continue
 			end
+			waitJobsByUnit[waitUnit.id] = job
 			waitJobsThisPlayJob[#waitJobsThisPlayJob+1] = job -- If present and marked as a wait job, but not necessarily valid
 			if not isWaitJobCorrectlyAssigned(job) then
 				errored = true
-			end
-			if not errored then
-				acceptableWaitJobIds[job.id] = true
 			end
 		    ::continue::
 		end
 
 		if errored then
-			-- Break play job and any accessible wait jobs (might not be every wait job made for this job)
+			-- Break play job and wait jobs
 			cancelJob(playJob)
 			for _, waitJob in ipairs(waitJobsThisPlayJob) do
-				safelyCancelWaitJob(waitJob)
+				markWaitJobCancel(waitJob)
 			end
 		else
 			-- Reset wait jobs' completion timers. We only do it here so that the jobs are only done indefinitely if the actual play job is still working
@@ -1016,40 +1112,99 @@ local function maintainJobs()
 				waitJob.completion_timer = consts.waitJobCompletionTimerSet
 			end
 
-			-- Delay the play job if the wait jobs aren't ready to finish
 			local ready = true
-			for _, waitUnit in ipairs(waitUnits) do
-				if not canAddImminentJobAction(waitUnit) then
-					ready = false
-					break
+
+			local boardIsOnTable = table and board and dfhack.items.getHolderBuilding(board) == table
+			-- if playJob.flags.fetching or playJob.flags.bringing then
+			if not boardIsOnTable then
+				ready = false
+			elseif ready and not isPlayJobRunning(playJob) then
+				-- Set play job to be running
+				playJob.flags[consts.isRunningPlayJobFlagKey] = true
+				playJob.completion_timer = consts.playJobCompletionTimerSet -- This seems to be able to tick down a tiny bit before the game is actually running
+
+				local chairBuildingToMoveJobTo
+				local other
+				if getter ~= a and getter ~= b then
+					-- Game was brought by a third unit
+
+					-- Give play job to one of the players
+					-- But first remove the player from their wait job (and mark it to be cancelled)
+					local recipient = rng:drandom() < 0.5 and a or b
+					other = recipient == a and b or a
+					local waitJobToCancel = waitJobsByUnit[recipient.id]
+					chairBuildingToMoveJobTo = dfhack.job.getHolder(waitJobToCancel)
+					-- Don't use dfhack.job.removeWorker as it does not force
+					recipient.job.current_job = nil
+					for i, ref in ipairs(waitJobToCancel.general_refs) do
+						if ref:getType() == df.general_ref_type.UNIT_WORKER then
+							waitJobToCancel.general_refs:erase(i)
+							ref:delete()
+							break
+						end
+					end
+					markWaitJobCancel(waitJobToCancel)
+
+					-- Now we hand it over
+					local workerRef = dfhack.job.getGeneralRef(playJob, df.general_ref_type.UNIT_WORKER)
+					assert(workerRef, "Getter unit was not the job's worker??")
+					getter.job.current_job = nil
+					workerRef.unit_id = recipient.id
+					-- workerRef.cached_index = -1
+					recipient.job.current_job = playJob
 				else
-					addImminentJobAction(waitUnit)
+					chairBuildingToMoveJobTo = getter == a and aChair or bChair
+					other = getter == a and b or a -- Whoever is waiting
 				end
+
+				-- Move play job from table to chair (without carrying items with it)
+				local tableToMoveFrom = dfhack.job.getHolder(playJob)
+				for i, job in ipairs(tableToMoveFrom.jobs) do
+					if job == playJob then
+						tableToMoveFrom.jobs:erase(i)
+						break
+					end
+				end
+				chairBuildingToMoveJobTo.jobs:insert("#", playJob)
+				local holderRef = dfhack.job.getGeneralRef(playJob, df.general_ref_type.BUILDING_HOLDER)
+				holderRef.building_id = chairBuildingToMoveJobTo.id
+				local x, y, z = getJobBuildingPosition(playJob)
+				playJob.pos.x, playJob.pos.y, playJob.pos.z = x, y, z
+				local player = dfhack.job.getWorker(playJob)
+				player.path.goal = df.unit_path_goal.SeekBuildingForJob -- Or WorkAtBuilding?
+				player.path.dest.x = x
+				player.path.dest.y = y
+				player.path.dest.z = z
+				-- Removing the path fixes a bug where the player would be removed from the job worker when the move action to go to the chair completed...? Something about the path's next step still being the table.
+				player.path.path.x:resize(0)
+				player.path.path.y:resize(0)
+				player.path.path.z:resize(0)
+
+				-- Make both the play job and the wait job say "play game of ur"
+				playJob.reaction_name = "PLAY_GAME_OF_UR"
+				waitJobsByUnit[other.id].reaction_name = "PLAY_GAME_OF_UR"
 			end
-			assert(dfhack.job.getWorker(getter.job.current_job) == getter, "The getter unit is not getting the items?")
+
 			if not ready then
 				playJob.completion_timer = consts.playJobCompletionTimerSet
-			-- Not really any reason to force the play job to finish imminently, more delay is better
-			-- elseif canAddImminentJobAction(getter) then
-			-- 	addImminentJobAction(getter)
 			end
 		end
 	end
-	for _, waitJob in ipairs(waitJobsInWorld) do
-		if not acceptableWaitJobIds[waitJob.id] then
-			safelyCancelWaitJob(waitJob)
-		end
+
+	for _, job in ipairs(waitJobsToCancel) do
+		cancelJob(job)
 	end
 end
 
 local jobsToCancelAfterJobCompletionCallbacks = {}
 
 local function onJobCompleted(job)
-	if isPlayJob(job) or isWaitJob(job) then
+	if isPlayJob(job) or isWaitJob(job) or isStoreJob(job) then
 		removeJobThought(job)
 	end
 
-	if not isPlayJob(job) then
+	if not (isPlayJob(job) and isPlayJobRunning(job)) then
+		-- Ideally, a non-running play job would not complete
 		return
 	end
 
@@ -1060,7 +1215,6 @@ local function onJobCompleted(job)
 	local board = boardId and df.item.find(boardId)
 
 	if not (a and b and board and getter and location) then
-		-- Announce that the Ur game was cancelled?
 		return
 	end
 
@@ -1080,15 +1234,32 @@ local function onJobCompleted(job)
 	-- onJobCompleted runs all script's callbacks, then the onTick function runs. This avoids a crash
 	playGame(job, a, b, jobsToCancelAfterJobCompletionCallbacks)
 
-	local returner
+	local potentialReturners = {}
 	if getter ~= a and getter ~= b then
-		-- Had the game brought by a third person, use same person to bring it back
-		returner = getter
-	else
-		-- Randomise between original getter and the unit that didn't bring if there were only two units involved
-		returner = rng:drandom() < 0.5 and a or b
+		-- Had the game brought by a third person, try to use same person to bring it back
+		potentialReturners[#potentialReturners+1] = getter
 	end
-	tryPlaceBoardInLocationBox(board, location, getLocationBoxBuildings(location), returner)
+	-- Either player can return, but if there was a getter then they take priority for returning
+	if rng:drandom() < 0.5 then
+		potentialReturners[#potentialReturners+1] = a
+		potentialReturners[#potentialReturners+1] = b
+	else
+		-- Other way 'round
+		potentialReturners[#potentialReturners+1] = b
+		potentialReturners[#potentialReturners+1] = a
+	end
+
+	-- Get final returner
+	local finalReturner
+	for _, potentialReturner in ipairs(potentialReturners) do
+		if canBeAddedToJob(potentialReturner) then
+			finalReturner = potentialReturner
+			break
+		end
+	end
+
+	-- finalReturner can be nil
+	tryPlaceBoardInLocationBox(board, location, getLocationBoxBuildings(location), finalReturner)
 end
 
 if not rng then
