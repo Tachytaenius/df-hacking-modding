@@ -1,3 +1,9 @@
+-- bathe
+-- Gets your citizens to take a bath more often, not just when there's spatter.
+-- It makes them happy and also... really goes through your soap reserves!
+-- By Tachytaenius
+-- For DF version 0.47.05
+
 local utils = require("utils")
 local repeatUtil = require("repeat-util")
 
@@ -7,11 +13,35 @@ local consts = {
 	chancePerRepeat = 0.25 -- Per eligible unit
 }
 
--- TODO: Soldiers on squad orders (etc) shouldn't decide to clean themselves...
+-- TODO: Don't pick dry/inactive wells (how does the game check?)
 
 -- Backported from later versions of DFHack
 local function removeJobPostings(job)
 	qerror("TODO") -- I don't think we'll need this to be filled in.
+	-- If this really is needed, other scripts such as Ur-ist's control script have it.
+end
+local function isUnitInSquadOrder(unit)
+	-- Part of a squad?
+	local squad = df.squad.find(unit.military.squad_id)
+	if not squad then
+		return false
+	end
+	-- Any all-squad orders?
+	if #squad.orders > 0 then
+		return true
+	end
+	-- Any position-specific orders?
+	local positionIndex = unit.military.squad_position
+	if #squad.positions <= positionIndex then
+		-- ???
+		return false
+	end
+	local position = squad.positions[positionIndex]
+	if #position.orders > 0 then
+		return true
+	end
+	-- No orders found
+	return false
 end
 local function canBeAddedToJob(unit)
 	if unit.job.current_job then
@@ -81,6 +111,9 @@ local function bathe(unit, building, direction)
 	addJobWorker(job, unit)
 	-- unit.path.goal = df.unit_path_goal.StartWaterJobWell
 	-- unit.path.dest.x, unit.path.dest.y, unit.path.dest.z = x, y, z
+	-- unit.path.path.x:resize(0)
+	-- unit.path.path.y:resize(0)
+	-- unit.path.path.z:resize(0)
 	dfhack.job.linkIntoWorld(job, true)
 end
 
@@ -160,6 +193,18 @@ local function selectWell(unit)
 	return choice.building, choice.direction
 end
 
+local function hasCleanSelfCooldown(unit)
+	for _, trait in ipairs(unit.status.misc_traits) do
+		if
+			trait.id == df.misc_trait_type.CleanSelfCooldown and
+			trait.value > 0 -- Presumably. I see some misc traits at 0, so I imagine that these timers work like action timers but just don't get removed.
+		then
+			return true
+		end
+	end
+	return false
+end
+
 local function repeatFunction()
 	if not checkShouldRun() then
 		disable()
@@ -169,6 +214,7 @@ local function repeatFunction()
 		if not dfhack.units.isCitizen(unit) then
 			goto continue
 		end
+
 		if dfhack.units.isBaby(unit) then
 			-- Otherwise you get "cancels clean self: too insane"
 			goto continue
@@ -176,17 +222,26 @@ local function repeatFunction()
 		if not canBeAddedToJob(unit) then
 			goto continue
 		end
+		if isUnitInSquadOrder(unit) then
+			goto continue
+		end
+		if hasCleanSelfCooldown(unit) then
+			goto continue
+		end
+
 		if rng:drandom() >= consts.chancePerRepeat then
 			goto continue
 		end
 		if getMaxGrime(unit) < autoBatheThreshold then
 			goto continue
 		end
+
 		local well, direction = selectWell(unit)
 		if not well then
 			goto continue
 		end
 		bathe(unit, well, direction)
+
 	    ::continue::
 	end
 end

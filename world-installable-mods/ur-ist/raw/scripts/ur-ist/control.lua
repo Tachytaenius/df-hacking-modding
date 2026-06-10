@@ -3,7 +3,6 @@
 -- By Tachytaenius
 -- For DF version 0.47.05
 
--- Requires my put-item script
 -- Requires my v47utils plugin for safe job cancellation
 
 local repeatUtil = require("repeat-util")
@@ -64,6 +63,58 @@ local function shuffle(t)
 		ret[i], ret[j] = ret[j], ret[i]
 	end
 	return ret
+end
+
+local function addItemToJob(job, item, role, filterIdx, insertIdx) -- Backported from a later DFHack version
+	if role ~= df.job_item_ref.T_role.TargetContainer then
+		if item.flags.in_job then
+			return false
+		end
+		item.flags.in_job = true
+	end
+
+	local itemLink = df.specific_ref:new()
+	itemLink.type = df.specific_ref_type.JOB
+	itemLink.data.job = job
+	item.specific_refs:insert("#", itemLink)
+
+	local jobLink = df.job_item_ref:new()
+	jobLink.item = item
+	jobLink.role = role
+	jobLink.job_item_idx = filterIdx
+
+	if insertIdx >= 0 and insertIdx < #job.items then
+		job.items:insert(insertIdx, jobLink)
+	else
+		job.items:insert("#", jobLink)
+	end
+
+	return true
+end
+
+local function putItem(item, building, forceEventManagerFix)
+	local job = df.job:new()
+
+	if forceEventManagerFix then
+		job.completion_timer = 0 -- Workaround for event manager bug for this type of job (it doesn't fire otherwise)
+	end
+
+	job.job_type = df.job_type.PutItemOnDisplay
+
+	job.pos.x = building.centerx
+	job.pos.y = building.centery
+	job.pos.z = building.z
+
+	addItemToJob(job, item, df.job_item_ref.T_role.Hauled, -1, -1)
+
+	local buildingRef = df.general_ref_building_holderst:new()
+	buildingRef.building_id = building.id
+	job.general_refs:insert("#", buildingRef)
+	building.jobs:insert("#", job)
+
+	dfhack.job.linkIntoWorld(job, true)
+
+	return job
 end
 
 local function removeJobThought(job) -- For onJobCompleted
@@ -197,9 +248,6 @@ local function isUnitInSquadOrder(unit)
 end
 local function canBeAddedToJob(unit)
 	if unit.job.current_job then
-		return false
-	end
-	if isUnitInSquadOrder(unit) then
 		return false
 	end
 	return true
@@ -553,9 +601,9 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 	end
 
 	if not (
-		canBeAddedToJob(getterUnit) and
-		canBeAddedToJob(unitA) and
-		canBeAddedToJob(unitB)
+		canBeAddedToJob(getterUnit) and not isUnitInSquadOrder(getterUnit) and
+		canBeAddedToJob(unitA) and not isUnitInSquadOrder(unitA) and
+		canBeAddedToJob(unitB) and not isUnitInSquadOrder(unitB)
 	) then
 		return
 	end
@@ -660,7 +708,7 @@ local function setUpGame(event, unitA, unitB, getterUnit)
 		[unitB.id] = tableSet.chairB
 	}
 
-	local getJob = dfhack.run_script("put-item", "-itemId", board.id, "-buildingId", table.id, "-forceEventManagerFix") -- forceEventManagerFix ensures that onJobCompleted will activate for the job
+	local getJob = putItem(board, table, true)
 	addJobWorker(getJob, getterUnit)
 	-- Customise job and, if the reaction for it is present, make sure that the items aren't consumed by linking to a reagent with [PRESERVE_REAGENT]
 	local gatherReaction = findReactionByName("GATHER_GAME_OF_UR_PIECES")
@@ -907,7 +955,7 @@ local function tryPlaceBoardInLocationBox(item, location, boxBuildings, forceUni
 			-- TODO: Custom reaction instead of put item on display for moving items around? Will it work? Don't forget to remove job thought.
 
 			-- Synthesise a job to claim it (not a job marked with the unused flag used to start an actual game)
-			local job = dfhack.run_script("put-item", "-itemId", item.id, "-buildingId", box.id, "-forceEventManagerFix") -- in_building will be true when it is placed
+			local job = putItem(item, box, true) -- in_building will be true when it is placed
 			job.flags[consts.isLocationStorageJobFlagKey] = true
 			job.general_refs:insert("#", {new = df.general_ref_abstract_buildingst, site_id = df.global.ui.site_id, building_id = location.id})
 			if forceUnit then
@@ -1044,7 +1092,7 @@ local function maintainJobs()
 	for _, playJob in ipairs(playJobs) do
 		-- TODO: Cancel Ur jobs ifever any item hacked into its memory (or the location hacked into its memory (or the building!)) becomes in any way invalid
 
-		-- TODO: Upon an Ur job being cancelled (at least anywhere in this mod's code), ensure the items are placed back in the location or were left on a table in in_building mode
+		-- TODO: Upon an Ur job being cancelled (at least anywhere in this mod's code), ensure the items are placed back in the location or were left on a table in in_building mode. Maybe make sure they are before cancellation, too?
 
 		local errored = false
 
@@ -1252,7 +1300,7 @@ local function onJobCompleted(job)
 	-- Get final returner
 	local finalReturner
 	for _, potentialReturner in ipairs(potentialReturners) do
-		if canBeAddedToJob(potentialReturner) then
+		if canBeAddedToJob(potentialReturner) and not isUnitInSquadOrder(potentialReturner) then
 			finalReturner = potentialReturner
 			break
 		end

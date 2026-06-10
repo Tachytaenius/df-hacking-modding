@@ -1,7 +1,8 @@
 -- put-item
 -- By Tachytaenius
 
--- TODO: cancelDisplayJob for job menu
+-- Requires my plugin v47utils to cancel jobs cleanly
+-- But you can also specify the argument `-dontUsePluginToCancel` to get the game to do it (in a less clean way)
 
 local utils = require("utils")
 local eventful = require("plugins.eventful")
@@ -42,6 +43,7 @@ end
 
 local validArgs = utils.invert({
 	"cancelJob",
+	"dontUsePluginToCancel",
 
 	"itemId",
 	"buildingId",
@@ -83,6 +85,24 @@ if args.startWatching then
 	return
 end
 
+local function cancelJob(job)
+	-- This can crash with general refs left in the job, so we clear them
+	local i = 0
+	while i < #job.general_refs do
+		local ref = job.general_refs[i]
+		if
+			-- These two types are handled by job removal code already
+			ref._type ~= df.general_ref_building_holderst and
+			ref._type ~= df.general_ref_unit_workerst
+		then
+			job.general_refs:erase(i)
+		else
+			i = i + 1
+		end
+	end
+	dfhack.run_command("v47utils remove-job " .. job.id)
+end
+
 if args.cancelJob then
 	local job
 	if tonumber(args.cancelJob) then
@@ -111,7 +131,12 @@ if args.cancelJob then
 	if job.job_type ~= df.job_type.PutItemOnDisplay then
 		qerror("Not a PutItemOnDisplay job")
 	end
-	-- dfhack.job.removeJob(job) -- Supposedly unsafe in this version, so instead we will sabotage the job for the next time someone takes it
+
+	if not args.dontUsePluginToCancel then -- Optional, because a plugin dependency can be unwieldy
+		cancelJob(job)
+		return
+	end
+
 	job.flags.item_lost = true
 	-- Also need to cancel the item references
 	-- Backported from later DFHack versions' disconnectJobItem
